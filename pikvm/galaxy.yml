@@ -1,0 +1,38 @@
+#SPDX-License-Identifier: MIT-0
+### REQUIRED
+# The namespace of the collection. This can be a company/brand/organization or product namespace under which all
+# content lives. May only contain alphanumeric lowercase characters and underscores. Namespaces cannot start with
+# underscores or numbers and cannot contain consecutive underscores
+namespace: nsys
+
+# The name of the collection. Has the same character restrictions as 'namespace'
+name: pikvm
+
+# The version of the collection. Must be compatible with semantic versioning
+version: 1.0.0
+
+readme: README.md
+
+authors:
+- AI-Working Group
+
+description: An Ansible Collection to handle PiKVM
+
+license:
+- GPL-3.0-or-later
+
+license_file: ''
+
+tags: []
+
+dependencies: {}
+
+repository: https://github.com/n-one-systems/pikvm-ansible.git
+
+documentation: https://github.com/n-one-systems/pikvm-ansible
+
+homepage: https://github.com/n-one-systems/pikvm-ansible
+
+issues: https://github.com/n-one-systems/pikvm-ansible/issues
+
+build_ignore: []
