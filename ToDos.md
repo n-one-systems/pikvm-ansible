@@ -4,7 +4,7 @@ This document outlines the implementation plan for the nsys.pikvm Ansible collec
 
 ## 1. Project Structure Setup
 
-### 1.1 Initialize Collection Framework
+### 1.1 Initialize Collection Framework - done
 - **Description**: Create the initial collection structure using ansible-galaxy
 - **Implementation**:
   ```bash
@@ -12,7 +12,7 @@ This document outlines the implementation plan for the nsys.pikvm Ansible collec
   ```
 - **Expected Outcome**: Basic directory structure for the collection
 
-### 1.2 Setup Directory Structure
+### 1.2 Setup Directory Structure - done
 - **Description**: Create all necessary directories for the collection components
 - **Implementation**:
   ```bash
@@ -26,7 +26,7 @@ This document outlines the implementation plan for the nsys.pikvm Ansible collec
   ```
 - **Expected Outcome**: Complete directory structure ready for development
 
-### 1.3 Configure Basic Metadata
+### 1.3 Configure Basic Metadata - done
 - **Description**: Create galaxy.yml and other metadata files
 - **Implementation**:
   - Add proper metadata to galaxy.yml (version, author, description, etc.)
