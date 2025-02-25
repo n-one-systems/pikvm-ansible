@@ -216,6 +216,7 @@ def main():
     result = dict(
         changed=False,
         info={}
+
     )
     
     # Get fields param if specified
