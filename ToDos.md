@@ -36,7 +36,7 @@ This document outlines the implementation plan for the nsys.pikvm Ansible collec
 
 ## 2. Core Utilities Development
 
-### 2.1 API Interaction Layer
+### 2.1 API Interaction Layer - done
 - **Description**: Develop the base API interaction utilities that all modules will use
 - **Implementation**: Create `plugins/module_utils/pikvm_api.py` with:
   - Base API class for HTTP interactions with PiKVM endpoints
@@ -48,7 +48,7 @@ This document outlines the implementation plan for the nsys.pikvm Ansible collec
 - **Dependencies**: None
 - **Expected Outcome**: Reusable API utility class that can be imported by all modules
 
-### 2.2 Common Module Utilities
+### 2.2 Common Module Utilities - done
 - **Description**: Create shared utilities for all modules to reduce code duplication
 - **Implementation**: Create `plugins/module_utils/pikvm_common.py` with:
   - Standard argument spec definitions (hostname, username, password)
@@ -59,7 +59,7 @@ This document outlines the implementation plan for the nsys.pikvm Ansible collec
 - **Dependencies**: 2.1 API Interaction Layer
 - **Expected Outcome**: Common utilities that standardize module behavior
 
-### 2.3 Connection Management
+### 2.3 Connection Management - done
 - **Description**: Develop utilities for managing connections and authentication
 - **Implementation**: Create `plugins/module_utils/pikvm_connection.py` with:
   - Connection pooling functionality
@@ -71,7 +71,7 @@ This document outlines the implementation plan for the nsys.pikvm Ansible collec
 
 ## 3. Module Implementation
 
-### 3.1 pikvm_info Module
+### 3.1 pikvm_info Module  - done
 - **Description**: Implement module to retrieve system information
 - **Implementation**: Create `plugins/modules/pikvm_info.py` with:
   - Standard connection parameters
