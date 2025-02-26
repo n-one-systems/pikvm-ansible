@@ -424,7 +424,7 @@ class PiKVMAPI:
         
         with open(image_path, 'rb') as f:
             return self.post('/api/msd/write', params=params, data=f.read())
-    
+
     def upload_msd_remote(self, url, image_name=None, timeout=10):
         """
         Upload an image from a remote URL to the MSD.
