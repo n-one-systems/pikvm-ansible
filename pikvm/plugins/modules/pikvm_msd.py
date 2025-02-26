@@ -5,6 +5,7 @@
 # GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
 
 from __future__ import absolute_import, division, print_function
+
 __metaclass__ = type
 
 DOCUMENTATION = r'''
@@ -107,6 +108,13 @@ options:
       - Whether to wait for operations to complete.
     type: bool
     default: true
+  force:
+    description:
+      - Whether to force overwrite an existing image when uploading.
+      - If false and the image already exists, the upload will be skipped.
+      - If true and the image already exists, it will be removed before uploading.
+    type: bool
+    default: false
 requirements:
   - python >= 3.6
   - pyotp (if using two-factor authentication)
@@ -124,6 +132,17 @@ EXAMPLES = r'''
     src: "/path/to/image.iso"
     image_name: "ubuntu.iso"
     media_type: cdrom
+
+- name: Upload an ISO image to PiKVM, overwriting if it exists
+  nsys.pikvm.pikvm_msd:
+    hostname: "pikvm.example.com"
+    username: "admin"
+    password: "password"
+    state: present
+    src: "/path/to/image.iso"
+    image_name: "ubuntu.iso"
+    media_type: cdrom
+    force: true
 
 - name: Download a remote ISO to PiKVM
   nsys.pikvm.pikvm_msd:
@@ -222,41 +241,89 @@ from ansible_collections.nsys.pikvm.plugins.module_utils.pikvm_common import (
 )
 
 
-def upload_image(module, client, result, src, image_name, check_mode=False):
+def upload_image(module, client, result, src, image_name, force=False, check_mode=False):
     """
     Upload an image from local file to PiKVM.
+
+    Args:
+        module: AnsibleModule instance
+        client: PiKVMAPI client
+        result: Result dict to update
+        src: Source file path
+        image_name: Name for the image on PiKVM
+        force: Whether to force overwrite existing image
+        check_mode: Whether in check mode
+
+    Returns:
+        Updated result dict
     """
     # Validate file exists
     if not os.path.isfile(src):
         exit_with_error(module, result, f"Source file {src} does not exist or is not a file")
-        
+
     # Use filename if image_name not provided
     if not image_name:
         image_name = os.path.basename(src)
-    
+
     # Get current MSD state for comparison
     msd_state_before = execute_pikvm_module(
         module, client, result,
         client.get_msd_state
     )
-    
-    # Check if image already exists
+
+    # Check if image already exists in storage
     image_exists = False
-    if 'result' in msd_state_before and 'images' in msd_state_before['result']:
-        image_exists = image_name in msd_state_before['result']['images']
-        
-    # Skip if the image already exists (to avoid re-uploading)
-    if image_exists:
-        result['message'] = f"Image {image_name} already exists"
+    storage_images = {}
+
+    if 'result' in msd_state_before:
+        storage = msd_state_before['result'].get('storage', {})
+        storage_images = storage.get('images', {})
+        image_exists = image_name in storage_images
+
+    # If image exists but force is not set, skip upload
+    if image_exists and not force:
+        result['message'] = f"Image {image_name} already exists (use force=true to overwrite)"
         result['msd_state'] = msd_state_before.get('result', {})
         return update_result(result, changed=False)
-    
+
+    # If image exists and force is set, we need to remove it first
+    if image_exists and force:
+        if check_mode:
+            result['message'] = f"Would remove existing image {image_name} and upload new version"
+            result['msd_state'] = msd_state_before.get('result', {})
+            return update_result(result, changed=True)
+
+        # Check if image is in use (connected)
+        is_connected = False
+        current_image = None
+
+        if 'result' in msd_state_before:
+            drive = msd_state_before['result'].get('drive', {})
+            is_connected = drive.get('connected', False)
+            current_image = drive.get('image')
+
+        # Disconnect if the image is currently in use
+        if is_connected and current_image == image_name:
+            execute_pikvm_module(
+                module, client, result,
+                client.connect_msd,
+                connected=False
+            )
+
+        # Remove the existing image
+        execute_pikvm_module(
+            module, client, result,
+            client.remove_msd_image,
+            image_name=image_name
+        )
+
     # Skip actual upload in check mode
     if check_mode:
-        result['message'] = f"Would upload image {src} as {image_name}"
+        action = "upload new image" if not image_exists else "overwrite existing image"
+        result['message'] = f"Would {action} {image_name}"
         result['msd_state'] = msd_state_before.get('result', {})
         return update_result(result, changed=True)
-    
+
     # Perform the upload
     try:
         execute_pikvm_module(
@@ -265,52 +332,102 @@ def upload_image(module, client, result, src, image_name, check_mode=False):
             image_path=src,
             image_name=image_name
         )
-        
+
         # Get updated MSD state
         msd_state_after = execute_pikvm_module(
             module, client, result,
             client.get_msd_state
         )
-        
-        result['message'] = f"Image {image_name} uploaded successfully"
+
+        action = "uploaded" if not image_exists else "overwritten"
+        result['message'] = f"Image {image_name} {action} successfully"
         result['msd_state'] = msd_state_after.get('result', {})
         return update_result(result, changed=True)
-        
+
     except Exception as e:
         exit_with_error(module, result, f"Failed to upload image: {to_native(e)}")
 
 
-def download_remote_image(module, client, result, remote_src, image_name, timeout, check_mode=False):
+def download_remote_image(module, client, result, remote_src, image_name, timeout, force=False, check_mode=False):
     """
     Download an image from a remote URL to PiKVM.
+
+    Args:
+        module: AnsibleModule instance
+        client: PiKVMAPI client
+        result: Result dict to update
+        remote_src: Remote URL source
+        image_name: Name for the image on PiKVM
+        timeout: Timeout for download
+        force: Whether to force overwrite existing image
+        check_mode: Whether in check mode
+
+    Returns:
+        Updated result dict
     """
     # Use filename from URL if image_name not provided
     if not image_name:
         image_name = os.path.basename(remote_src)
-    
+
     # Get current MSD state for comparison
     msd_state_before = execute_pikvm_module(
         module, client, result,
         client.get_msd_state
     )
-    
-    # Check if image already exists
+
+    # Check if image already exists in storage
     image_exists = False
-    if 'result' in msd_state_before and 'images' in msd_state_before['result']:
-        image_exists = image_name in msd_state_before['result']['images']
-        
-    # Skip if the image already exists (to avoid re-downloading)
-    if image_exists:
-        result['message'] = f"Image {image_name} already exists"
+    storage_images = {}
+
+    if 'result' in msd_state_before:
+        storage = msd_state_before['result'].get('storage', {})
+        storage_images = storage.get('images', {})
+        image_exists = image_name in storage_images
+
+    # If image exists but force is not set, skip download
+    if image_exists and not force:
+        result['message'] = f"Image {image_name} already exists (use force=true to overwrite)"
         result['msd_state'] = msd_state_before.get('result', {})
         return update_result(result, changed=False)
-    
+
+    # If image exists and force is set, we need to remove it first
+    if image_exists and force:
+        if check_mode:
+            result['message'] = f"Would remove existing image {image_name} and download new version"
+            result['msd_state'] = msd_state_before.get('result', {})
+            return update_result(result, changed=True)
+
+        # Check if image is in use (connected)
+        is_connected = False
+        current_image = None
+
+        if 'result' in msd_state_before:
+            drive = msd_state_before['result'].get('drive', {})
+            is_connected = drive.get('connected', False)
+            current_image = drive.get('image')
+
+        # Disconnect if the image is currently in use
+        if is_connected and current_image == image_name:
+            execute_pikvm_module(
+                module, client, result,
+                client.connect_msd,
+                connected=False
+            )
+
+        # Remove the existing image
+        execute_pikvm_module(
+            module, client, result,
+            client.remove_msd_image,
+            image_name=image_name
+        )
+
     # Skip actual download in check mode
     if check_mode:
-        result['message'] = f"Would download image from {remote_src} as {image_name}"
+        action = "download new image" if not image_exists else "overwrite existing image"
+        result['message'] = f"Would {action} {image_name} from {remote_src}"
         result['msd_state'] = msd_state_before.get('result', {})
         return update_result(result, changed=True)
-    
+
     # Perform the download
     try:
         execute_pikvm_module(
@@ -320,17 +437,18 @@ def download_remote_image(module, client, result, remote_src, image_name, timeou
             image_name=image_name,
             timeout=timeout
         )
-        
+
         # Get updated MSD state
         msd_state_after = execute_pikvm_module(
             module, client, result,
             client.get_msd_state
         )
-        
-        result['message'] = f"Image {image_name} downloaded successfully from {remote_src}"
+
+        action = "downloaded" if not image_exists else "overwritten"
+        result['message'] = f"Image {image_name} {action} successfully from {remote_src}"
         result['msd_state'] = msd_state_after.get('result', {})
         return update_result(result, changed=True)
-        
+
     except Exception as e:
         exit_with_error(module, result, f"Failed to download image from {remote_src}: {to_native(e)}")
 
@@ -344,38 +462,42 @@ def configure_and_connect_msd(module, client, result, image_name, media_type, re
         module, client, result,
         client.get_msd_state
     )
-    
+
     # Extract current configuration
     cur_state = msd_state_before.get('result', {})
     cur_drive = cur_state.get('drive', {})
     cur_image = cur_drive.get('image')
     cur_cdrom = cur_drive.get('cdrom', True)
     cur_rw = cur_drive.get('rw', False)
-    cur_connected = cur_state.get('connected', False)
-    
-    # Determine if image exists
+    cur_connected = cur_drive.get('connected', False)
+
+    # Determine if image exists in storage
     image_exists = False
-    if 'images' in cur_state:
-        image_exists = image_name in cur_state['images']
-        
+    storage_images = {}
+
+    if 'result' in msd_state_before:
+        storage = msd_state_before['result'].get('storage', {})
+        storage_images = storage.get('images', {})
+        image_exists = image_name in storage_images
+
     if not image_exists:
         exit_with_error(module, result, f"Image {image_name} does not exist on the PiKVM")
-    
+
     # Determine if changes are needed
     is_cdrom = media_type == 'cdrom'
     need_config_change = (
-        cur_image != image_name or
-        cur_cdrom != is_cdrom or
-        (not is_cdrom and cur_rw != (not read_only))
+            cur_image != image_name or
+            cur_cdrom != is_cdrom or
+            (not is_cdrom and cur_rw != (not read_only))
     )
     need_connect = not cur_connected
-    
+
     # If no changes needed
     if not need_config_change and not need_connect:
         result['message'] = f"MSD already configured and connected with image {image_name}"
         result['msd_state'] = cur_state
         return update_result(result, changed=False)
-    
+
     # Skip actual changes in check mode
     if check_mode:
         message_parts = []
@@ -383,11 +505,11 @@ def configure_and_connect_msd(module, client, result, image_name, media_type, re
             message_parts.append(f"Would configure MSD with image {image_name}")
         if need_connect:
             message_parts.append("Would connect MSD")
-            
+
         result['message'] = " and ".join(message_parts)
         result['msd_state'] = cur_state
         return update_result(result, changed=True)
-    
+
     # Apply configuration if needed
     if need_config_change:
         execute_pikvm_module(
@@ -397,7 +519,7 @@ def configure_and_connect_msd(module, client, result, image_name, media_type, re
             cdrom=is_cdrom,
             rw=not read_only if not is_cdrom else None
         )
-    
+
     # Connect MSD if needed
     if need_connect:
         execute_pikvm_module(
@@ -405,20 +527,20 @@ def configure_and_connect_msd(module, client, result, image_name, media_type, re
             client.connect_msd,
             connected=True
         )
-    
+
     # Get updated MSD state
     msd_state_after = execute_pikvm_module(
         module, client, result,
         client.get_msd_state
     )
-    
+
     # Prepare result message
     message_parts = []
     if need_config_change:
         message_parts.append(f"MSD configured with image {image_name}")
     if need_connect:
         message_parts.append("MSD connected")
-        
+
     result['message'] = " and ".join(message_parts)
     result['msd_state'] = msd_state_after.get('result', {})
     return update_result(result, changed=True)
@@ -433,34 +555,37 @@ def disconnect_msd(module, client, result, check_mode=False):
         module, client, result,
         client.get_msd_state
     )
-    
+
     # Check if already disconnected
-    cur_connected = msd_state_before.get('result', {}).get('connected', False)
-    
+    cur_connected = False
+    if 'result' in msd_state_before:
+        drive = msd_state_before['result'].get('drive', {})
+        cur_connected = drive.get('connected', False)
+
     if not cur_connected:
         result['message'] = "MSD already disconnected"
         result['msd_state'] = msd_state_before.get('result', {})
         return update_result(result, changed=False)
-    
+
     # Skip actual disconnect in check mode
     if check_mode:
         result['message'] = "Would disconnect MSD"
         result['msd_state'] = msd_state_before.get('result', {})
         return update_result(result, changed=True)
-    
+
     # Disconnect the MSD
     execute_pikvm_module(
         module, client, result,
         client.connect_msd,
         connected=False
     )
-    
+
     # Get updated MSD state
     msd_state_after = execute_pikvm_module(
         module, client, result,
         client.get_msd_state
     )
-    
+
     result['message'] = "MSD disconnected"
     result['msd_state'] = msd_state_after.get('result', {})
     return update_result(result, changed=True)
@@ -475,58 +600,61 @@ def remove_image(module, client, result, image_name, check_mode=False):
         module, client, result,
         client.get_msd_state
     )
-    
-    # Check if image exists
-    cur_state = msd_state_before.get('result', {})
+
+    # Check if image exists in storage
     image_exists = False
-    if 'images' in cur_state:
-        image_exists = image_name in cur_state['images']
-        
+    storage_images = {}
+
+    if 'result' in msd_state_before:
+        storage = msd_state_before['result'].get('storage', {})
+        storage_images = storage.get('images', {})
+        image_exists = image_name in storage_images
+
     if not image_exists:
         result['message'] = f"Image {image_name} does not exist"
-        result['msd_state'] = cur_state
+        result['msd_state'] = msd_state_before.get('result', {})
         return update_result(result, changed=False)
-    
-    # Check if image is in use
-    image_in_use = False
-    if 'images' in cur_state and image_name in cur_state['images']:
-        image_in_use = cur_state['images'][image_name].get('in_use', False)
-        
-    # Check if MSD is connected with this image
-    cur_connected = cur_state.get('connected', False)
-    cur_image = cur_state.get('drive', {}).get('image')
-    
+
+    # Check if image is in use (connected)
+    is_connected = False
+    current_image = None
+
+    if 'result' in msd_state_before:
+        drive = msd_state_before['result'].get('drive', {})
+        is_connected = drive.get('connected', False)
+        current_image = drive.get('image')
+
     # Skip actual removal in check mode
     if check_mode:
         message = f"Would remove image {image_name}"
-        if image_in_use or (cur_connected and cur_image == image_name):
+        if is_connected and current_image == image_name:
             message += " (requires disconnecting MSD first)"
-            
+
         result['message'] = message
-        result['msd_state'] = cur_state
+        result['msd_state'] = msd_state_before.get('result', {})
         return update_result(result, changed=True)
-    
+
     # Disconnect MSD if necessary
-    if cur_connected and cur_image == image_name:
+    if is_connected and current_image == image_name:
         execute_pikvm_module(
             module, client, result,
             client.connect_msd,
             connected=False
         )
-    
+
     # Remove the image
     execute_pikvm_module(
         module, client, result,
         client.remove_msd_image,
         image_name=image_name
     )
-    
+
     # Get updated MSD state
     msd_state_after = execute_pikvm_module(
         module, client, result,
         client.get_msd_state
     )
-    
+
     result['message'] = f"Image {image_name} removed"
     result['msd_state'] = msd_state_after.get('result', {})
     return update_result(result, changed=True)
@@ -540,19 +668,19 @@ def reset_msd(module, client, result, check_mode=False):
     if check_mode:
         result['message'] = "Would reset MSD"
         return update_result(result, changed=True)
-    
+
     # Reset the MSD
     execute_pikvm_module(
         module, client, result,
         client.reset_msd
     )
-    
+
     # Get updated MSD state
     msd_state_after = execute_pikvm_module(
         module, client, result,
         client.get_msd_state
     )
-    
+
     result['message'] = "MSD reset"
     result['msd_state'] = msd_state_after.get('result', {})
     return update_result(result, changed=True)
@@ -572,21 +700,22 @@ def main():
         remote_timeout=dict(type='int', default=30),
         media_type=dict(type='str', choices=['cdrom', 'flash'], default='cdrom'),
         read_only=dict(type='bool', default=True),
-        wait=dict(type='bool', default=True)
+        wait=dict(type='bool', default=True),
+        force=dict(type='bool', default=False)
     )
-    
+
     # Define required parameters based on state
     required_if = [
         ('state', 'present', ['image_name', 'src', 'remote_src'], True),
         ('state', 'connected', ['image_name'], False),
         ('state', 'absent', ['image_name'], False),
     ]
-    
+
     # Define mutually exclusive parameters
     mutually_exclusive = [
         ['src', 'remote_src']
     ]
-    
+
     # Create the module
     module = create_module(
         argument_spec=argument_spec,
@@ -594,7 +723,7 @@ def main():
         mutually_exclusive=mutually_exclusive,
         supports_check_mode=True
     )
-    
+
     # Extract parameters
     state = module.params['state']
     image_name = module.params['image_name']
@@ -604,51 +733,52 @@ def main():
     media_type = module.params['media_type']
     read_only = module.params['read_only']
     wait = module.params['wait']
+    force = module.params['force']
     check_mode = module.check_mode
-    
+
     # Initialize result
     result = dict(
         changed=False,
         message='',
         msd_state={}
     )
-    
+
     # Get PiKVM client
     client = get_pikvm_client(module)
-    
+
     # Perform actions based on state
     try:
         if state == 'present':
             # Upload local image
             if src:
-                upload_image(module, client, result, src, image_name, check_mode)
+                upload_image(module, client, result, src, image_name, force, check_mode)
             # Download remote image
             elif remote_src:
-                download_remote_image(module, client, result, remote_src, image_name, remote_timeout, check_mode)
+                download_remote_image(module, client, result, remote_src, image_name, remote_timeout, force, check_mode)
             else:
                 exit_with_error(module, result, "Either src or remote_src must be provided when state is 'present'")
-                
+
         elif state == 'connected':
             if not image_name:
                 exit_with_error(module, result, "image_name is required when state is 'connected'")
-                
+
             configure_and_connect_msd(module, client, result, image_name, media_type, read_only, check_mode)
-            
+
         elif state == 'disconnected':
             disconnect_msd(module, client, result, check_mode)
-            
+
         elif state == 'absent':
             if not image_name:
                 exit_with_error(module, result, "image_name is required when state is 'absent'")
-                
+
             remove_image(module, client, result, image_name, check_mode)
-            
+
         elif state == 'reset':
             reset_msd(module, client, result, check_mode)
-            
+
         # Exit with the result
         module.exit_json(**result)
-        
+
     except Exception as e:
         exit_with_error(module, result, f"Error managing PiKVM MSD: {to_native(e)}")
 
