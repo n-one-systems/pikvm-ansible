@@ -169,7 +169,7 @@ def main():
         
         # Extract useful information
         result['enabled'] = current_state.get('enabled', False)
-        result['connected'] = current_state.get('drive', {}).get('connected', False)
+        result['connected'] = current_state.get('connected', False)
         result['busy'] = current_state.get('busy', False)
         
         # Get drive information
@@ -179,16 +179,9 @@ def main():
         result['is_rw'] = drive.get('rw', False)
         
         # Get images information
-        storage = current_state.get('storage', {})
-        images_info = storage.get('images', {})
+        images_info = current_state.get('images', {})
         result['images'] = list(images_info.keys())
         result['images_info'] = images_info
-        
-        # Add storage information
-        result['storage_free'] = storage.get('free', 0)
-        result['storage_total'] = storage.get('size', 0)
-        result['storage_free_mb'] = round(storage.get('free', 0) / 1024 / 1024, 2)
-        result['storage_total_mb'] = round(storage.get('size', 0) / 1024 / 1024, 2)
         
         # Exit successfully
         module.exit_json(**result)
