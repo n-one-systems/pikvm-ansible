@@ -109,7 +109,6 @@ options:
     default: true
 requirements:
   - python >= 3.6
-  - requests
   - pyotp (if using two-factor authentication)
 notes:
   - Check mode is supported.
@@ -317,7 +316,7 @@ def download_remote_image(module, client, result, remote_src, image_name, timeou
         execute_pikvm_module(
             module, client, result,
             client.upload_msd_remote,
-            remote=remote_src,
+            url=remote_src,
             image_name=image_name,
             timeout=timeout
         )
