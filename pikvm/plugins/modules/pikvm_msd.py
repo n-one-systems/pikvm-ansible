@@ -229,6 +229,7 @@ message:
 '''
 
 import os
+import time
 from ansible.module_utils.basic import AnsibleModule
 from ansible.module_utils.common.text.converters import to_native
 from ansible_collections.nsys.pikvm.plugins.module_utils.pikvm_common import (
@@ -485,15 +486,20 @@ def configure_and_connect_msd(module, client, result, image_name, media_type, re
 
     # Determine if changes are needed
     is_cdrom = media_type == 'cdrom'
-    need_config_change = (
+
+    # Check if we need to change the configuration
+    config_change_needed = (
             cur_image != image_name or
             cur_cdrom != is_cdrom or
             (not is_cdrom and cur_rw != (not read_only))
     )
+
+    # Determine if we need to connect or if we're already connected with the correct image
+    already_connected_correctly = cur_connected and cur_image == image_name
     need_connect = not cur_connected
 
-    # If no changes needed
-    if not need_config_change and not need_connect:
+    # If no changes needed and already correctly connected
+    if not config_change_needed and already_connected_correctly:
         result['message'] = f"MSD already configured and connected with image {image_name}"
         result['msd_state'] = cur_state
         return update_result(result, changed=False)
@@ -501,7 +507,7 @@ def configure_and_connect_msd(module, client, result, image_name, media_type, re
     # Skip actual changes in check mode
     if check_mode:
         message_parts = []
-        if need_config_change:
+        if config_change_needed:
             message_parts.append(f"Would configure MSD with image {image_name}")
         if need_connect:
             message_parts.append("Would connect MSD")
@@ -510,41 +516,89 @@ def configure_and_connect_msd(module, client, result, image_name, media_type, re
         result['msd_state'] = cur_state
         return update_result(result, changed=True)
 
-    # Apply configuration if needed
-    if need_config_change:
-        execute_pikvm_module(
+    # Track if any changes were actually made
+    changes_made = False
+
+    try:
+        # If we're changing images and the MSD is connected, disconnect first
+        if config_change_needed and cur_connected:
+            execute_pikvm_module(
+                module, client, result,
+                client.connect_msd,
+                connected=False
+            )
+            changes_made = True
+            # Add small delay to ensure disconnection is complete
+            time.sleep(1)
+
+        # Apply configuration if needed
+        if config_change_needed:
+            execute_pikvm_module(
+                module, client, result,
+                client.set_msd_params,
+                image_name=image_name,
+                cdrom=is_cdrom,
+                rw=not read_only if not is_cdrom else None
+            )
+            changes_made = True
+
+        # Connect MSD if needed
+        if need_connect or (config_change_needed and cur_connected):
+            execute_pikvm_module(
+                module, client, result,
+                client.connect_msd,
+                connected=True
+            )
+            changes_made = True
+
+        # Get updated MSD state
+        msd_state_after = execute_pikvm_module(
             module, client, result,
-            client.set_msd_params,
-            image_name=image_name,
-            cdrom=is_cdrom,
-            rw=not read_only if not is_cdrom else None
+            client.get_msd_state
         )
 
-    # Connect MSD if needed
-    if need_connect:
-        execute_pikvm_module(
-            module, client, result,
-            client.connect_msd,
-            connected=True
-        )
+        # Prepare result message
+        message_parts = []
+        if config_change_needed:
+            message_parts.append(f"MSD configured with image {image_name}")
+        if need_connect or (config_change_needed and cur_connected):
+            message_parts.append("MSD connected")
 
-    # Get updated MSD state
-    msd_state_after = execute_pikvm_module(
-        module, client, result,
-        client.get_msd_state
+        if not message_parts:
+            message = f"No changes needed, MSD already configured and connected with image {image_name}"
+        else:
+            message = " and ".join(message_parts)
+
+        result['message'] = message
+        result['msd_state'] = msd_state_after.get('result', {})
+
+        # Verify if the state actually changed
+        actual_changes = has_state_changed(msd_state_before.get('result', {}), msd_state_after.get('result', {}))
+
+        return update_result(result, changed=changes_made and actual_changes)
+
+    except Exception as e:
+        exit_with_error(module, result, f"Failed to configure or connect MSD: {to_native(e)}")
+
+
+def has_state_changed(before, after):
+    """
+    Check if the MSD state has actually changed between before and after
+    """
+    if not before or not after:
+        return True
+
+    # Compare relevant drive parameters
+    before_drive = before.get('drive', {})
+    after_drive = after.get('drive', {})
+
+    # Check the important fields
+    return (
+            before_drive.get('image') != after_drive.get('image') or
+            before_drive.get('cdrom') != after_drive.get('cdrom') or
+            before_drive.get('rw') != after_drive.get('rw') or
+            before_drive.get('connected') != after_drive.get('connected')
     )
-
-    # Prepare result message
-    message_parts = []
-    if need_config_change:
-        message_parts.append(f"MSD configured with image {image_name}")
-    if need_connect:
-        message_parts.append("MSD connected")
-
-    result['message'] = " and ".join(message_parts)
-    result['msd_state'] = msd_state_after.get('result', {})
-    return update_result(result, changed=True)
-
 
 def disconnect_msd(module, client, result, check_mode=False):
     """
