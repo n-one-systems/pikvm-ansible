@@ -1,0 +1,8 @@
+---
+new_ansible_user: ansible
+user_default_shell: /bin/bash
+new_user_ssh_key: "{{ lookup('file', '~/.ssh/id_rsa.pub' }}"
+
+# uses the default pikvm user
+ansible_user: root
+ansible_password: root
