@@ -1,0 +1,49 @@
+---
+- name: Update Hostname
+  become: true
+  become_method: nsys.pikvm.pikvm
+  block:
+  - name: Ensure fqdn hostname
+    ansible.builtin.hostname:
+      name: "{{ inventory_hostname }}"
+    register: hostname_result
+
+  - name: Update /etc/hosts file
+    lineinfile:
+      path: /etc/hosts
+      regexp: "^127.0.1.1"
+      line: "127.0.1.1 {{ inventory_hostname_short }} {{ inventory_hostname if inventory_hostname !=
+      inventory_hostname_short }}"
+      state: present
+    when: hostname_result.changed
+  
+- name: Add ansible user
+  become: true
+  become_method: nsys.pikvm.pikvm
+  block:
+  - name: Create ansible user
+    user:
+      name: "{{ new_ansible_user }}"
+      shell: "{{ user_default_shell }}"
+      createhome: true
+      state: present
+  - name: Create .ssh directory for ansible user
+    file:
+      path: "/home/{{ new_ansible_user }}/.ssh"
+      state: directory
+      mode: '0700'
+      owner: "{{ new_ansible_user }}"
+      group: "{{ new_ansible_user }}"
+  - name: Add SSH public key for ansible user
+    authorized_key:
+      user: "{{ new_ansible_user }}"
+      key: "{{ new_user_ssh_key }}"
+      state: present
+  - name: Configure passwordless sudo for ansible user
+    lineinfile:
+      path: "/etc/sudoers.d/{{ new_ansible_user }}"
+      state: present
+      create: true
+      mode: '0440'
+      line: "ansible ALL=(ALL) NOPASSWD: ALL"
+      validate: '/usr/sbin/visudo -cf %s'

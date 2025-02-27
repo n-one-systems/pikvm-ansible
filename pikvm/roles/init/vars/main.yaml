@@ -1,0 +1,1 @@
+ansible_remote_tmp: /tmp    # we have to forcefully set this to /tmp else ansible will fail
